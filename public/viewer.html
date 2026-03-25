@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Hologram Viewer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Syne:wght@600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="viewer-page">
+    <header id="appNav" class="app-nav overlay-nav"></header>
+    <div class="viewer-shell">
+      <video id="cameraFeed" class="camera-feed" autoplay muted playsinline webkit-playsinline></video>
+      <canvas id="scanCanvas" class="hidden"></canvas>
+      <div id="hologram-3d-container" class="hologram-3d"></div>
+
+      <div id="overlay" class="holo-card hidden">
+        <p id="overlayText" class="holo-text"></p>
+        <img id="gifImage" class="gif-frame" alt="Hologram GIF" />
+      </div>
+
+      <div class="hud">
+        <p id="statusBadge" class="badge">Loading...</p>
+        <button id="fallbackBtn" class="ghost-btn" type="button">Switch to fallback mode</button>
+      </div>
+
+      <section id="fallbackPanel" class="fallback hidden">
+        <h2>Fallback Mode</h2>
+        <p id="fallbackReason" class="hint">Camera is unavailable, showing non-camera hologram mode.</p>
+        <div class="holo-card static">
+          <p id="fallbackText" class="holo-text"></p>
+          <img id="fallbackGif" class="gif-frame" alt="Fallback GIF" />
+        </div>
+        <p class="hint">Tip: For best camera support, open in Safari or Chrome.</p>
+      </section>
+    </div>
+    <script src="/account-nav.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="/hologram-3d.js"></script>
+    <script src="/viewer.js"></script>
+  </body>
+</html>

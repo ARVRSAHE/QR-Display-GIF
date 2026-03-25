@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin - QR Display GIF</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Syne:wght@600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="gallery-page">
+    <header id="appNav" class="app-nav"></header>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Admin Panel</p>
+        <h1>Manage Accounts and Uploads</h1>
+        <p class="sub">Admin can reset user passwords and delete user accounts along with their uploads.</p>
+      </section>
+
+      <section class="panel auth-panel">
+        <h2>Admin Login</h2>
+        <div class="auth-grid">
+          <label class="field">
+            <span>Username</span>
+            <input id="adminUsername" type="text" placeholder="admin" />
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input id="adminPassword" type="password" placeholder="Admin password" />
+          </label>
+        </div>
+        <div class="auth-actions">
+          <button id="adminLoginBtn" type="button">Login as Admin</button>
+          <button id="refreshUsersBtn" type="button" class="ghost-btn">Refresh Users</button>
+        </div>
+        <p id="adminStatus" class="hint">Login as admin to manage accounts.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Users</h2>
+        <div id="usersList" class="stack"></div>
+      </section>
+    </main>
+
+    <script src="/account-nav.js"></script>
+    <script src="/admin.js"></script>
+  </body>
+</html>

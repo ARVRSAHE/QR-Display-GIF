@@ -1,0 +1,16 @@
+[
+  {
+    "id": "user-mn5t9odd43v5",
+    "username": "admin",
+    "passwordHash": "$2b$10$CRLCzvjvfeL3c1E9I54S0uyXiqVk.eXjZNQn6suT0HnF088m3pqHC",
+    "role": "admin",
+    "createdAt": "2026-03-25T08:58:15.255Z"
+  },
+  {
+    "id": "user-mn5tve4n3qy0",
+    "username": "24eu04159",
+    "passwordHash": "$2b$10$/5jZsmLxNE72kIUaWgGxPugrLF/DeG.YH4fK6tY4C/Jw2JyrCjr2O",
+    "role": "user",
+    "createdAt": "2026-03-25T09:15:08.231Z"
+  }
+]

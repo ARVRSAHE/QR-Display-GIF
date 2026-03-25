@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QR Camera Hologram GIF</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Syne:wght@600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="creator-page">
+    <header id="appNav" class="app-nav"></header>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">MWE Prototype</p>
+        <h1>Upload GIF. Generate QR. Launch Camera Hologram.</h1>
+        <p class="sub">Scan opens viewer and shows your floating GIF with top text.</p>
+      </section>
+
+      <section class="panel auth-panel auth-compact">
+        <div class="account-head">
+          <h2>Account</h2>
+          <button id="openAccountBtn" type="button" class="ghost-btn">Open Account Popup</button>
+        </div>
+        <p id="accountQuickStatus" class="hint">Not logged in.</p>
+      </section>
+
+      <div id="accountModal" class="modal hidden">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content account-modal-content">
+          <button id="closeAccountModalBtn" class="close-btn" type="button" aria-label="Close">×</button>
+          <h2 class="modal-title">Account</h2>
+          <div class="auth-tabs" role="tablist" aria-label="Account actions">
+            <button id="authTabLogin" class="ghost-btn auth-tab-btn is-active" type="button">Login</button>
+            <button id="authTabRegister" class="ghost-btn auth-tab-btn" type="button">Register</button>
+            <button id="authTabPassword" class="ghost-btn auth-tab-btn" type="button">Password</button>
+          </div>
+
+          <div class="auth-grid">
+            <label class="field">
+              <span>Username</span>
+              <input id="authUsername" type="text" placeholder="your_username" />
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <input id="authPassword" type="password" placeholder="Min 8 characters" />
+            </label>
+            <label id="confirmPasswordField" class="field hidden">
+              <span>Confirm Password</span>
+              <input id="authPasswordConfirm" type="password" placeholder="Repeat password" />
+            </label>
+          </div>
+
+          <div id="authPrimaryActions" class="auth-actions">
+            <button id="registerBtn" type="button">Register</button>
+            <button id="loginBtn" type="button" class="ghost-btn">Login</button>
+            <button id="logoutBtn" type="button" class="ghost-btn">Logout</button>
+          </div>
+
+          <div id="authSecondaryActions" class="auth-actions">
+            <button id="forgotPasswordBtn" type="button" class="ghost-btn">Forgot Password?</button>
+            <button id="toggleResetBtn" type="button" class="ghost-btn">Reset Password</button>
+          </div>
+
+          <div id="resetPanel" class="stack compact hidden">
+            <label class="field">
+              <span>Current Password</span>
+              <input id="currentPassword" type="password" placeholder="Current password" />
+            </label>
+            <div class="auth-grid">
+              <label class="field">
+                <span>New Password</span>
+                <input id="resetNewPassword" type="password" placeholder="New password" />
+              </label>
+              <label class="field">
+                <span>Confirm New Password</span>
+                <input id="resetNewPasswordConfirm" type="password" placeholder="Repeat new password" />
+              </label>
+            </div>
+            <div class="auth-actions">
+              <button id="confirmResetBtn" type="button" class="ghost-btn">Update Password</button>
+            </div>
+          </div>
+          <p id="authStatus" class="hint">Not logged in.</p>
+        </div>
+      </div>
+
+      <section class="panel upload-panel">
+        <h2>Create Share Link</h2>
+        <form id="uploadForm" class="stack" enctype="multipart/form-data">
+          <div class="flow-steps" aria-hidden="true">
+            <span>1. Upload GIF</span>
+            <span>2. Pick QR Colors</span>
+            <span>3. Generate and Share</span>
+          </div>
+
+          <label class="field">
+            <span>GIF File (max 25 MB)</span>
+            <input id="gifInput" name="gif" type="file" accept="image/gif" required />
+          </label>
+
+          <label class="field">
+            <span>Top Text (optional, max 60 chars)</span>
+            <input id="overlayText" name="overlayText" type="text" maxlength="60" placeholder="Happy Birthday, Nisha!" />
+          </label>
+
+          <div class="color-row">
+            <label class="field compact-field">
+              <span>QR Dark Color</span>
+              <input id="qrDark" name="qrDark" type="color" value="#221D23" />
+            </label>
+            <label class="field compact-field">
+              <span>QR Light Color</span>
+              <input id="qrLight" name="qrLight" type="color" value="#D0E37F" />
+            </label>
+          </div>
+
+          <div class="qr-presets">
+            <span>Preset Combos (easy scan)</span>
+            <div class="preset-row">
+              <button type="button" class="ghost-btn qr-preset-btn" data-preset-scope="create" data-dark="#000000" data-light="#FFFFFF"><span class="swatch" style="--swatch-dark:#000000;--swatch-light:#FFFFFF"></span><span>Classic B/W</span></button>
+              <button type="button" class="ghost-btn qr-preset-btn" data-preset-scope="create" data-dark="#221D23" data-light="#D0E37F"><span class="swatch" style="--swatch-dark:#221D23;--swatch-light:#D0E37F"></span><span>Shadow + Lime</span></button>
+              <button type="button" class="ghost-btn qr-preset-btn" data-preset-scope="create" data-dark="#0B1D39" data-light="#FFF8E6"><span class="swatch" style="--swatch-dark:#0B1D39;--swatch-light:#FFF8E6"></span><span>Navy + Ivory</span></button>
+              <button type="button" class="ghost-btn qr-preset-btn" data-preset-scope="create" data-dark="#123524" data-light="#F4FBE3"><span class="swatch" style="--swatch-dark:#123524;--swatch-light:#F4FBE3"></span><span>Forest + Mist</span></button>
+              <button type="button" class="ghost-btn qr-preset-btn" data-preset-scope="create" data-dark="#3B1F2B" data-light="#F8EBD2"><span class="swatch" style="--swatch-dark:#3B1F2B;--swatch-light:#F8EBD2"></span><span>Plum + Sand</span></button>
+            </div>
+            <p id="scanabilityBadge" class="hint scanability">Scanability: Checking...</p>
+          </div>
+
+          <button id="submitBtn" type="submit">Generate QR</button>
+          <p id="formMessage" class="message"></p>
+        </form>
+      </section>
+
+      <section id="result" class="panel result-panel hidden" aria-live="polite">
+        <h2>Your QR is Ready</h2>
+        <div class="qr-marker-frame">
+          <img id="qrImage" alt="Generated QR code" class="qr-image" />
+        </div>
+        <p class="hint">Share this QR. Scanner opens the viewer URL directly.</p>
+
+        <div class="stack compact">
+          <label class="field">
+            <span>Viewer URL</span>
+            <input id="viewerUrl" type="text" readonly />
+          </label>
+          <button id="copyBtn" type="button">Copy URL</button>
+          <p id="expiresAt" class="hint"></p>
+        </div>
+      </section>
+
+      <section class="panel gallery-panel">
+        <h2>View Gallery</h2>
+        <p class="hint">Browse all your uploaded GIFs and view their QR codes.</p>
+        <a class="link-btn" href="/gallery">View Gallery</a>
+      </section>
+    </main>
+    <script src="/account-nav.js"></script>
+    <script src="/creator.js"></script>
+  </body>
+</html>
