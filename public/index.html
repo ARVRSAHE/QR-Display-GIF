@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Syne:wght@600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body class="creator-page">
     <header id="appNav" class="app-nav"></header>
@@ -95,15 +95,27 @@
             <span>3. Generate and Share</span>
           </div>
 
-          <label class="field">
-            <span>GIF File (max 25 MB)</span>
-            <input id="gifInput" name="gif" type="file" accept="image/gif" required />
-          </label>
-
-          <label class="field">
-            <span>Top Text (optional, max 60 chars)</span>
-            <input id="overlayText" name="overlayText" type="text" maxlength="60" placeholder="Happy Birthday, Nisha!" />
-          </label>
+          <div class="gif-upload-block stack compact">
+            <label class="field">
+              <span>GIF Files (max 25 MB each)</span>
+              <div id="gifRows" class="stack compact">
+                <div class="gif-upload-row" data-row-index="1">
+                  <input id="gifInput" name="gif" type="file" accept="image/gif" required />
+                  <input
+                    class="gif-text-input"
+                    name="overlayTextItem"
+                    type="text"
+                    maxlength="60"
+                    placeholder="Top text for this GIF (optional)"
+                  />
+                </div>
+              </div>
+            </label>
+            <button id="addGifInputBtn" type="button" class="ghost-btn plus-toggle-btn add-more-gifs-btn">
+              <span class="plus-icon" aria-hidden="true">+</span>
+              <span>Add More GIFs</span>
+            </button>
+          </div>
 
           <div class="color-row">
             <label class="field compact-field">
@@ -130,6 +142,24 @@
 
           <button id="submitBtn" type="submit">Generate QR</button>
           <p id="formMessage" class="message"></p>
+
+          <div class="group-toggle-wrap">
+            <button
+              id="toggleGroupGifsBtn"
+              type="button"
+              class="ghost-btn plus-toggle-btn"
+              aria-expanded="false"
+              aria-controls="groupGifsSection"
+            >
+              <span class="plus-icon" aria-hidden="true">+</span>
+              <span>Group GIFs</span>
+            </button>
+          </div>
+
+          <section id="groupGifsSection" class="group-gifs-section hidden" aria-live="polite">
+            <p id="groupGifsStatus" class="hint">Open Group GIFs to view your uploads.</p>
+            <div id="groupGifsList" class="group-gifs-grid"></div>
+          </section>
         </form>
       </section>
 
@@ -153,10 +183,10 @@
       <section class="panel gallery-panel">
         <h2>View Gallery</h2>
         <p class="hint">Browse all your uploaded GIFs and view their QR codes.</p>
-        <a class="link-btn" href="/gallery">View Gallery</a>
+        <a class="link-btn" href="./gallery.html">View Gallery</a>
       </section>
     </main>
-    <script src="/account-nav.js"></script>
-    <script src="/creator.js"></script>
+    <script src="./account-nav.js"></script>
+    <script src="./creator.js"></script>
   </body>
 </html>

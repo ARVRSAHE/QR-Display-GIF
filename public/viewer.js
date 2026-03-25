@@ -4,11 +4,14 @@ const scanCanvas = document.getElementById("scanCanvas");
 const overlay = document.getElementById("overlay");
 const gifImage = document.getElementById("gifImage");
 const overlayTextEl = document.getElementById("overlayText");
+const groupOverlayGrid = document.getElementById("groupOverlayGrid");
 const statusBadge = document.getElementById("statusBadge");
 const fallbackPanel = document.getElementById("fallbackPanel");
+const fallbackCard = fallbackPanel?.querySelector(".holo-card.static");
 const fallbackReason = document.getElementById("fallbackReason");
 const fallbackText = document.getElementById("fallbackText");
 const fallbackGif = document.getElementById("fallbackGif");
+const groupFallbackGrid = document.getElementById("groupFallbackGrid");
 const fallbackBtn = document.getElementById("fallbackBtn");
 
 let detector = null;
@@ -23,7 +26,11 @@ let targetPose = { x: window.innerWidth / 2, y: window.innerHeight / 2, s: 0.8, 
 let deviceTilt = { beta: 0, gamma: 0 };
 let renderRaf = 0;
 let targetItemId = "";
+let targetRouteType = "v";
+let isGroupView = false;
 let targetQrValues = new Set();
+let currentTargetKey = "";
+let pendingTargetKey = "";
 const hologramContainer = document.getElementById("hologram-3d-container");
 let orientationEnabled = false;
 let userScale = 1;
@@ -102,29 +109,18 @@ start();
 
 
 async function start() {
-  const id = getIdFromPath();
-  if (!id) {
-    switchToFallback("Invalid URL.");
-    return;
+  const targetFromPath = getTargetFromPath();
+  const targetFromQuery = getTargetFromQuery();
+  const initialTarget = targetFromPath?.id ? targetFromPath : targetFromQuery;
+
+  if (initialTarget?.id && initialTarget?.type) {
+    const ok = await switchToTarget(initialTarget.type, initialTarget.id, true);
+    if (!ok) {
+      return;
+    }
+  } else {
+    status("Scan any supported QR to load GIFs.");
   }
-  targetItemId = id;
-
-  targetQrValues = new Set([
-    normalizeCodeValue(window.location.href),
-    normalizeCodeValue(`${window.location.origin}/v/${id}`)
-  ]);
-
-  const item = await fetchItem(id);
-  if (!item) {
-    return;
-  }
-
-  overlayTextEl.textContent = item.overlayText || "";
-  fallbackText.textContent = item.overlayText || "";
-  gifImage.src = item.gifUrl;
-  fallbackGif.src = item.gifUrl;
-
-  gifImage.style.objectFit = "contain";
 
   if (!window.isSecureContext) {
     switchToFallback("Camera requires HTTPS or localhost.");
@@ -169,7 +165,7 @@ async function start() {
     // Keep hologram visible over camera feed even without marker tracking support.
     targetPose.x = window.innerWidth / 2;
     targetPose.y = window.innerHeight * 0.58;
-    targetPose.s = clamp(0.95 * userScale, 0.4, 2.4);
+    targetPose.s = clamp((isGroupView ? 1.2 : 0.95) * userScale, 0.4, 2.8);
     targetPose.z = 18;
     targetPose.rotX = 8;
     targetPose.rotY = 0;
@@ -185,19 +181,106 @@ async function start() {
   }
 }
 
-async function fetchItem(id) {
+async function fetchPayload(type, id, hardFail) {
   try {
-    const res = await fetch(`/api/item/${encodeURIComponent(id)}`);
+    const endpoint = type === "g"
+      ? `/api/group/${encodeURIComponent(id)}`
+      : `/api/item/${encodeURIComponent(id)}`;
+    const res = await fetch(endpoint);
     const data = await res.json();
     if (!res.ok) {
-      switchToFallback(data.error || "Unable to load item.");
+      if (hardFail) {
+        switchToFallback(data.error || "Unable to load item.");
+      }
       return null;
     }
 
     return data;
   } catch (_err) {
-    switchToFallback("Network issue loading GIF data.");
+    if (hardFail) {
+      switchToFallback("Network issue loading GIF data.");
+    }
     return null;
+  }
+}
+
+async function switchToTarget(type, id, force) {
+  const nextType = type === "g" ? "g" : "v";
+  const nextId = String(id || "").trim();
+  if (!nextId) {
+    return false;
+  }
+
+  const nextKey = `${nextType}:${nextId}`;
+  if (!force && (nextKey === currentTargetKey || nextKey === pendingTargetKey)) {
+    return true;
+  }
+
+  pendingTargetKey = nextKey;
+  status("Loading matched GIF...");
+
+  const payload = await fetchPayload(nextType, nextId, Boolean(force));
+  if (!payload) {
+    if (pendingTargetKey === nextKey) {
+      pendingTargetKey = "";
+    }
+    return false;
+  }
+
+  targetRouteType = nextType;
+  targetItemId = nextId;
+  isGroupView = nextType === "g";
+  currentTargetKey = nextKey;
+  pendingTargetKey = "";
+
+  targetQrValues = new Set([
+    normalizeCodeValue(window.location.href),
+    normalizeCodeValue(`${window.location.origin}/${targetRouteType}/${targetItemId}`),
+    normalizeCodeValue(`${window.location.origin}/scan?target=${encodeURIComponent(`${targetRouteType}:${targetItemId}`)}`)
+  ]);
+
+  applyPayloadToViewer(payload);
+  return true;
+}
+
+function applyPayloadToViewer(payload) {
+  overlay.classList.toggle("group-mode", isGroupView);
+  fallbackCard?.classList.toggle("group-mode", isGroupView);
+
+  if (!isGroupView) {
+    overlayTextEl.textContent = payload.overlayText || "";
+    fallbackText.textContent = payload.overlayText || "";
+    gifImage.src = payload.gifUrl;
+    fallbackGif.src = payload.gifUrl;
+    gifImage.style.objectFit = "contain";
+    gifImage.classList.remove("hidden");
+    fallbackGif.classList.remove("hidden");
+    groupOverlayGrid?.classList.add("hidden");
+    groupFallbackGrid?.classList.add("hidden");
+    return;
+  }
+
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  overlayTextEl.textContent = `Group GIFs (${items.length})`;
+  fallbackText.textContent = `Group GIFs (${items.length})`;
+  gifImage.classList.add("hidden");
+  fallbackGif.classList.add("hidden");
+
+  const markup = items.map((item) => `
+    <article class="group-grid-item">
+      <p class="holo-text">${escapeHtml(item.overlayText || "GIF")}</p>
+      <img class="gif-frame" src="${item.gifUrl}" alt="${escapeHtml(item.overlayText || "Group GIF")}" />
+    </article>
+  `).join("");
+
+  if (groupOverlayGrid) {
+    groupOverlayGrid.innerHTML = markup;
+    groupOverlayGrid.classList.remove("hidden");
+  }
+
+  if (groupFallbackGrid) {
+    groupFallbackGrid.innerHTML = markup;
+    groupFallbackGrid.classList.remove("hidden");
   }
 }
 
@@ -290,9 +373,16 @@ async function scanFrameWithBarcodeDetector() {
 
   try {
     const codes = await detector.detect(cameraFeed);
-    const marker = pickTrackedCode(codes);
+    const marker = pickSupportedCode(codes);
 
     if (marker?.boundingBox) {
+      if (marker.rawValue) {
+        const target = extractTargetFromCodeValue(marker.rawValue);
+        if (target?.id && target?.type) {
+          await switchToTarget(target.type, target.id, false);
+        }
+      }
+
       lastMarkerSeenAt = Date.now();
       status("QR detected. Hologram anchored.");
       updateTargetPose(marker, cameraFeed.videoWidth, cameraFeed.videoHeight);
@@ -338,11 +428,12 @@ function scanFrameWithJsQr() {
       return;
     }
 
-    const normalizedRaw = normalizeCodeValue(qr.data);
-    const matches = targetQrValues.has(normalizedRaw) || normalizedRaw.endsWith(`/v/${targetItemId}`);
-    if (!matches) {
+    const target = extractTargetFromCodeValue(qr.data);
+    if (!target?.id || !target?.type) {
       return;
     }
+
+    void switchToTarget(target.type, target.id, false);
 
     const points = [
       qr.location.topLeftCorner,
@@ -373,7 +464,7 @@ function scanFrameWithJsQr() {
   }
 }
 
-function pickTrackedCode(codes) {
+function pickSupportedCode(codes) {
   if (!Array.isArray(codes) || codes.length === 0) {
     return null;
   }
@@ -383,12 +474,8 @@ function pickTrackedCode(codes) {
       continue;
     }
 
-    const normalizedRaw = normalizeCodeValue(code.rawValue);
-    if (targetQrValues.has(normalizedRaw)) {
-      return code;
-    }
-
-    if (normalizedRaw.endsWith(`/v/${targetItemId}`)) {
+    const target = extractTargetFromCodeValue(code.rawValue);
+    if (target?.id && target?.type) {
       return code;
     }
   }
@@ -413,7 +500,8 @@ function updateTargetPose(marker, sourceW, sourceH) {
 
   // Stronger distance response so zoom-in/out visibly changes hologram size.
   const markerScaleBase = clamp(Math.pow(qrPixelWidth / 170, 1.18), 0.45, 1.85);
-  const markerScale = clamp(markerScaleBase * userScale, 0.35, 2.7);
+  const groupScaleBoost = isGroupView ? 1.35 : 1;
+  const markerScale = clamp(markerScaleBase * userScale * groupScaleBoost, 0.35, 3.2);
   const depthZ = clamp((markerScale - 0.9) * 180, -90, 150);
 
   // Keep centered over QR while still floating in depth.
@@ -466,7 +554,7 @@ function startRenderLoop() {
 
     if (cameraOnlyMode) {
       // Gentle floating animation in camera-only mode.
-      targetPose.s = clamp(0.95 * userScale, 0.4, 2.4);
+      targetPose.s = clamp((isGroupView ? 1.2 : 0.95) * userScale, 0.4, 2.8);
       targetPose.z = 18 + Math.sin(Date.now() * 0.0022) * 4;
       targetPose.y = window.innerHeight * 0.58;
     }
@@ -537,9 +625,63 @@ function switchToFallback(reason) {
   }
 }
 
-function getIdFromPath() {
+function getTargetFromPath() {
   const parts = window.location.pathname.split("/").filter(Boolean);
-  return parts[0] === "v" ? parts[1] : "";
+  if (parts[0] === "v") {
+    return { type: "v", id: parts[1] || "" };
+  }
+  if (parts[0] === "g") {
+    return { type: "g", id: parts[1] || "" };
+  }
+  return { type: "", id: "" };
+}
+
+function getTargetFromQuery() {
+  const target = new URLSearchParams(window.location.search).get("target") || "";
+  return parseTargetToken(target);
+}
+
+function extractTargetFromCodeValue(value) {
+  if (!value) {
+    return { type: "", id: "" };
+  }
+
+  const raw = String(value || "").trim();
+  const directToken = parseTargetToken(raw);
+  if (directToken.id) {
+    return directToken;
+  }
+
+  try {
+    const parsed = new URL(raw, window.location.origin);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts[0] === "v") {
+      return { type: "v", id: parts[1] || "" };
+    }
+    if (parts[0] === "g") {
+      return { type: "g", id: parts[1] || "" };
+    }
+    if (parts[0] === "scan") {
+      const scanTarget = parsed.searchParams.get("target") || "";
+      return parseTargetToken(scanTarget);
+    }
+  } catch (_err) {
+    // Fall through to empty target.
+  }
+
+  return { type: "", id: "" };
+}
+
+function parseTargetToken(token) {
+  const raw = String(token || "").trim();
+  const match = raw.match(/^(v|g):([a-zA-Z0-9_-]+)$/);
+  if (!match) {
+    return { type: "", id: "" };
+  }
+  return {
+    type: match[1],
+    id: match[2]
+  };
 }
 
 function status(text) {
@@ -668,4 +810,13 @@ function touchDistance(t1, t2) {
   const dx = t1.clientX - t2.clientX;
   const dy = t1.clientY - t2.clientY;
   return Math.hypot(dx, dy);
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }

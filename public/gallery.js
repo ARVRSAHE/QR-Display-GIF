@@ -45,6 +45,7 @@ const TOKEN_KEY = "qrDisplayToken";
 let allItems = [];
 let currentUser = null;
 let selectedItem = null;
+let selectedGroup = null;
 let currentAuthView = "login";
 
 init();
@@ -279,12 +280,38 @@ async function loadGallery() {
 function renderGallery() {
   galleryContainer.innerHTML = "";
 
-  allItems.forEach((item) => {
-    const card = document.createElement("div");
-    card.className = "gallery-item";
-    const canManage = Boolean(currentUser && item.canManage);
+  const grouped = groupItemsForGallery(allItems);
 
-    card.innerHTML = `
+  grouped.forEach((group) => {
+    const groupWrap = document.createElement("section");
+    groupWrap.className = "upload-group";
+    const groupLabel = group.groupId
+      ? `Grouped Upload (${group.items.length} GIF${group.items.length === 1 ? "" : "s"})`
+      : "Single Upload";
+    const groupActions = group.groupId
+      ? `
+        <div class="group-head-actions">
+          <button type="button" class="ghost-btn open-group-btn" data-group-id="${escapeHtml(group.groupId)}" data-group-count="${group.items.length}">Open Group</button>
+          <button type="button" class="ghost-btn group-qr-btn" data-group-id="${escapeHtml(group.groupId)}" data-group-count="${group.items.length}">Group QR</button>
+        </div>
+      `
+      : "";
+    groupWrap.innerHTML = `
+      <div class="group-head-row">
+        <p class="upload-group-head">${escapeHtml(groupLabel)}</p>
+        ${groupActions}
+      </div>
+    `;
+
+    const cardsWrap = document.createElement("div");
+    cardsWrap.className = "gallery-grid";
+
+    group.items.forEach((item) => {
+      const card = document.createElement("div");
+      card.className = "gallery-item";
+      const canManage = Boolean(currentUser && item.canManage);
+
+      card.innerHTML = `
       <div class="gallery-item-image">
         <img src="${escapeHtml(item.gifUrl)}" alt="${escapeHtml(item.overlayText)}" />
       </div>
@@ -299,21 +326,81 @@ function renderGallery() {
       </div>
     `;
 
-    const quickViewBtn = card.querySelector(".quick-view-btn");
-    quickViewBtn?.addEventListener("click", (event) => {
-      event.stopPropagation();
-      showQRModal(item);
+      const quickViewBtn = card.querySelector(".quick-view-btn");
+      quickViewBtn?.addEventListener("click", (event) => {
+        event.stopPropagation();
+        showQRModal(item);
+      });
+
+      const quickDeleteBtn = card.querySelector(".quick-delete-btn");
+      quickDeleteBtn?.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        await quickDeleteItem(item);
+      });
+
+      card.addEventListener("click", () => showQRModal(item));
+      cardsWrap.appendChild(card);
     });
 
-    const quickDeleteBtn = card.querySelector(".quick-delete-btn");
-    quickDeleteBtn?.addEventListener("click", async (event) => {
+    groupWrap.appendChild(cardsWrap);
+
+    const openGroupBtn = groupWrap.querySelector(".open-group-btn");
+    openGroupBtn?.addEventListener("click", (event) => {
+      event.preventDefault();
       event.stopPropagation();
-      await quickDeleteItem(item);
+      window.location.href = `/scan?target=${encodeURIComponent(`g:${group.groupId}`)}`;
     });
 
-    card.addEventListener("click", () => showQRModal(item));
-    galleryContainer.appendChild(card);
+    const groupQrBtn = groupWrap.querySelector(".group-qr-btn");
+    groupQrBtn?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showGroupQRModal(group);
+    });
+
+    galleryContainer.appendChild(groupWrap);
   });
+}
+
+function showGroupQRModal(group) {
+  if (!group?.groupId) {
+    return;
+  }
+
+  selectedItem = null;
+  selectedGroup = group;
+
+  const baseUrl = window.location.origin;
+  const groupUrl = `${baseUrl}/scan?target=${encodeURIComponent(`g:${group.groupId}`)}`;
+  const groupQrUrl = `/api/group-qr/${encodeURIComponent(group.groupId)}?t=${Date.now()}`;
+
+  modalTitle.textContent = `Grouped Upload (${group.items.length} GIF${group.items.length === 1 ? "" : "s"})`;
+  viewerUrl.value = groupUrl;
+  scanCountInfo.textContent = "Group QR for all GIFs in this batch.";
+
+  qrImage.src = groupQrUrl;
+  managePanel.classList.add("hidden");
+  manageMessage.textContent = "";
+
+  qrModal.classList.remove("hidden");
+}
+
+function groupItemsForGallery(items) {
+  const sorted = [...items].sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+  const map = new Map();
+
+  for (const item of sorted) {
+    const key = item.groupId || `single-${item.id}`;
+    if (!map.has(key)) {
+      map.set(key, {
+        groupId: item.groupId || "",
+        items: []
+      });
+    }
+    map.get(key).items.push(item);
+  }
+
+  return Array.from(map.values());
 }
 
 async function quickDeleteItem(item) {
@@ -351,10 +438,11 @@ async function quickDeleteItem(item) {
 }
 
 function showQRModal(item) {
+  selectedGroup = null;
   selectedItem = item;
   modalTitle.textContent = item.overlayText || "Untitled";
   const baseUrl = window.location.origin;
-  const url = `${baseUrl}/v/${item.id}`;
+  const url = `${baseUrl}/scan?target=${encodeURIComponent(`v:${item.id}`)}`;
   viewerUrl.value = url;
   scanCountInfo.textContent = `Scans: ${item.scanCount || 0} | Created: ${formatDate(item.createdAt)}`;
 
@@ -378,6 +466,7 @@ function showQRModal(item) {
 function closeModal() {
   qrModal.classList.add("hidden");
   selectedItem = null;
+  selectedGroup = null;
 }
 
 function copyUrl() {

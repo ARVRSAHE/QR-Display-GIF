@@ -27,14 +27,15 @@ async function initAccountNav() {
     }
   }
 
-  const adminLink = role === "admin" ? "<a href=\"/admin\">Admin</a>" : "";
+  const appBase = getAppBasePath();
+  const adminLink = role === "admin" ? `<a href="${appBase}admin.html">Admin</a>` : "";
 
   nav.innerHTML = `
     <div class="nav-inner">
-      <a class="nav-brand" href="/">QR Display GIF</a>
+      <a class="nav-brand" href="${appBase}index.html">QR Display GIF</a>
       <nav class="nav-links">
-        <a href="/">Create</a>
-        <a href="/gallery">Gallery</a>
+        <a href="${appBase}index.html">Create</a>
+        <a href="${appBase}gallery.html">Gallery</a>
         ${adminLink}
       </nav>
       <div class="nav-user">
@@ -72,6 +73,15 @@ window.addEventListener("auth-changed", () => {
 });
 
 initAccountNav();
+
+function getAppBasePath() {
+  const path = String(window.location.pathname || "");
+  const publicIndex = path.indexOf("/public/");
+  if (publicIndex >= 0) {
+    return `${path.slice(0, publicIndex)}/public/`;
+  }
+  return "/";
+}
 
 function escapeHtml(value) {
   return String(value || "")

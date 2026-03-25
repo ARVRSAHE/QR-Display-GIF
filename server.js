@@ -98,6 +98,14 @@ function sanitizeText(input) {
   return String(input).replace(/[<>]/g, "").trim().slice(0, 60);
 }
 
+function sanitizeGroupId(input) {
+  const value = String(input || "").trim();
+  if (!value) {
+    return "";
+  }
+  return value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40);
+}
+
 function sanitizeUsername(input) {
   return String(input || "")
     .trim()
@@ -255,6 +263,11 @@ function migrateUploads() {
       item.customization = normalized;
       changed = true;
     }
+
+    if (!Object.prototype.hasOwnProperty.call(item, "groupId")) {
+      item.groupId = "";
+      changed = true;
+    }
   }
 
   if (changed) {
@@ -342,6 +355,7 @@ function toItemResponse(item, reqUser) {
   const isAdmin = Boolean(reqUser && (reqUser.role || "user") === "admin");
   return {
     id: item.id,
+    groupId: sanitizeGroupId(item.groupId || ""),
     overlayText: item.overlayText,
     gifUrl: `/${item.gifPath}`,
     createdAt: item.createdAt,
@@ -649,11 +663,13 @@ app.post("/api/upload", requireAuth, upload.single("gif"), (req, res) => {
     const id = `holo-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const relativeGifPath = path.join("uploads", req.file.filename).replace(/\\/g, "/");
     const customization = normalizeCustomizationFromBody(req.body);
+    const groupId = sanitizeGroupId(req.body.groupId || "");
 
     const entry = {
       id,
       userId: req.user.id,
       overlayText,
+      groupId,
       gifPath: relativeGifPath,
       createdAt: nowIso(),
       expiresAt: null,
@@ -665,7 +681,7 @@ app.post("/api/upload", requireAuth, upload.single("gif"), (req, res) => {
     db.push(entry);
     writeDb(db);
 
-    const viewerPath = `/v/${id}`;
+    const viewerPath = `/scan?target=${encodeURIComponent(`v:${id}`)}`;
     const viewerUrl = `${resolvePublicBaseUrl(req)}${viewerPath}`;
     res.json({
       id,
@@ -692,6 +708,35 @@ app.get("/api/item/:id", optionalAuth, (req, res) => {
   writeDb(db);
 
   res.json(toItemResponse(item, req.user));
+});
+
+app.get("/api/group/:groupId", optionalAuth, (req, res) => {
+  const groupId = sanitizeGroupId(req.params.groupId || "");
+  if (!groupId) {
+    res.status(400).json({ error: "Invalid group id." });
+    return;
+  }
+
+  const db = readDb();
+  const items = db
+    .filter((x) => sanitizeGroupId(x.groupId || "") === groupId)
+    .sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
+
+  if (!items.length) {
+    res.status(404).json({ error: "Group not found." });
+    return;
+  }
+
+  for (const item of items) {
+    item.scanCount = Number(item.scanCount || 0) + 1;
+  }
+  writeDb(db);
+
+  res.json({
+    groupId,
+    createdAt: items[0].createdAt,
+    items: items.map((item) => toItemResponse(item, req.user))
+  });
 });
 
 app.get("/api/items", requireAuth, (req, res) => {
@@ -775,7 +820,7 @@ app.get("/api/qr/:id", async (req, res) => {
 
   const requestedBase = normalizeBaseUrl(req.query.base || "");
   const baseUrl = requestedBase || resolvePublicBaseUrl(req);
-  const viewerUrl = `${baseUrl}/v/${item.id}`;
+  const viewerUrl = `${baseUrl}/scan?target=${encodeURIComponent(`v:${item.id}`)}`;
   const customization = ensureCustomization(item);
 
   try {
@@ -795,7 +840,50 @@ app.get("/api/qr/:id", async (req, res) => {
   }
 });
 
+app.get("/api/group-qr/:groupId", async (req, res) => {
+  const groupId = sanitizeGroupId(req.params.groupId || "");
+  if (!groupId) {
+    res.status(400).json({ error: "Invalid group id." });
+    return;
+  }
+
+  const db = readDb();
+  const hasGroup = db.some((x) => sanitizeGroupId(x.groupId || "") === groupId);
+  if (!hasGroup) {
+    res.status(404).json({ error: "Group not found." });
+    return;
+  }
+
+  const requestedBase = normalizeBaseUrl(req.query.base || "");
+  const baseUrl = requestedBase || resolvePublicBaseUrl(req);
+  const groupUrl = `${baseUrl}/scan?target=${encodeURIComponent(`g:${groupId}`)}`;
+
+  try {
+    const pngBuffer = await QRCode.toBuffer(groupUrl, {
+      type: "png",
+      width: 360,
+      margin: 2,
+      color: {
+        dark: "#221D23",
+        light: "#D0E37F"
+      }
+    });
+    res.setHeader("Content-Type", "image/png");
+    res.send(pngBuffer);
+  } catch (err) {
+    res.status(500).json({ error: err.message || "QR generation failed." });
+  }
+});
+
 app.get("/v/:id", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "viewer.html"));
+});
+
+app.get("/g/:groupId", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "viewer.html"));
+});
+
+app.get("/scan", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "viewer.html"));
 });
 

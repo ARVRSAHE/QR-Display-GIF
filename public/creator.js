@@ -1,5 +1,7 @@
 const uploadForm = document.getElementById("uploadForm");
 const gifInput = document.getElementById("gifInput");
+const gifRows = document.getElementById("gifRows");
+const addGifInputBtn = document.getElementById("addGifInputBtn");
 const submitBtn = document.getElementById("submitBtn");
 const formMessage = document.getElementById("formMessage");
 const result = document.getElementById("result");
@@ -34,10 +36,15 @@ const confirmPasswordField = document.getElementById("confirmPasswordField");
 const authPrimaryActions = document.getElementById("authPrimaryActions");
 const authSecondaryActions = document.getElementById("authSecondaryActions");
 const scanabilityBadge = document.getElementById("scanabilityBadge");
+const toggleGroupGifsBtn = document.getElementById("toggleGroupGifsBtn");
+const groupGifsSection = document.getElementById("groupGifsSection");
+const groupGifsStatus = document.getElementById("groupGifsStatus");
+const groupGifsList = document.getElementById("groupGifsList");
 const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024;
 const TOKEN_KEY = "qrDisplayToken";
 let currentUser = null;
 let currentAuthView = "login";
+let groupGifsLoadedOnce = false;
 
 registerBtn.addEventListener("click", register);
 loginBtn.addEventListener("click", login);
@@ -49,6 +56,8 @@ initAccountModal();
 initQrPresets();
 initAuthTabs();
 initScanabilityWatchers();
+initGroupGifsToggle();
+initAddMoreGifs();
 
 uploadForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -60,58 +69,99 @@ uploadForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  const file = gifInput.files?.[0];
-  if (!file) {
+  const rows = getSelectedGifRows();
+  if (!rows.length) {
     setMessage("Please choose a GIF file.", true);
     return;
   }
 
-  if (file.size > MAX_FILE_SIZE_BYTES) {
-    setMessage("GIF is too large. Max allowed size is 25 MB.", true);
-    return;
+  for (const row of rows) {
+    const file = row.file;
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      setMessage(`'${file.name}' is too large. Max allowed size is 25 MB.`, true);
+      return;
+    }
   }
 
   submitBtn.disabled = true;
-  setMessage("Uploading and generating QR...", false);
+  setMessage(`Uploading ${rows.length} GIF${rows.length === 1 ? "" : "s"}...`, false);
 
   try {
-    const body = new FormData(uploadForm);
-    const response = await fetch("/api/upload", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`
-      },
-      body
-    });
-    const raw = await response.text();
-    const data = tryParseJson(raw);
+    const dark = String(qrDark?.value || "#221D23");
+    const light = String(qrLight?.value || "#D0E37F");
+    const groupId = rows.length > 1
+      ? `grp-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`
+      : "";
+    let latestData = null;
 
-    if (!response.ok) {
-      if (response.status === 401) {
-        clearToken();
-        updateAuthStatus(null);
-        throw new Error("Your session expired. Please login again.");
+    for (let i = 0; i < rows.length; i += 1) {
+      const file = rows[i].file;
+      const overlayText = rows[i].overlayText;
+      setMessage(`Uploading ${i + 1}/${rows.length}: ${file.name}`, false);
+
+      const body = new FormData();
+      body.append("gif", file, file.name);
+      body.append("overlayText", overlayText);
+      body.append("qrDark", dark);
+      body.append("qrLight", light);
+      if (groupId) {
+        body.append("groupId", groupId);
       }
-      if (response.status === 413) {
-        throw new Error("Upload too large (413). Use a smaller GIF (<= 25 MB).");
+
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`
+        },
+        body
+      });
+      const raw = await response.text();
+      const data = tryParseJson(raw);
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          clearToken();
+          updateAuthStatus(null);
+          throw new Error("Your session expired. Please login again.");
+        }
+        if (response.status === 413) {
+          throw new Error(`'${file.name}' is too large (413). Use a smaller GIF (<= 25 MB).`);
+        }
+        if (response.status === 403) {
+          throw new Error("You do not have permission to upload with this account.");
+        }
+        throw new Error(data.error || `Upload failed for '${file.name}' (${response.status}).`);
       }
-      if (response.status === 403) {
-        throw new Error("You do not have permission to upload with this account.");
+
+      if (!data?.id) {
+        throw new Error(`Upload for '${file.name}' succeeded but response was invalid.`);
       }
-      throw new Error(data.error || `Upload failed (${response.status}).`);
+
+      latestData = data;
     }
 
-    if (!data?.id) {
-      throw new Error("Upload succeeded but response was invalid.");
+    if (!latestData?.id) {
+      throw new Error("Upload finished but no result was returned.");
     }
 
-    const viewerUrl = data.viewerUrl || `${window.location.origin}${data.viewerPath}`;
+    const data = latestData;
+    const viewerUrl = groupId
+      ? `${window.location.origin}/scan?target=${encodeURIComponent(`g:${groupId}`)}`
+      : (data.viewerUrl || `${window.location.origin}${data.viewerPath}`);
 
-    qrImage.src = `/api/qr/${encodeURIComponent(data.id)}?t=${Date.now()}`;
+    qrImage.src = groupId
+      ? `/api/group-qr/${encodeURIComponent(groupId)}?t=${Date.now()}`
+      : `/api/qr/${encodeURIComponent(data.id)}?t=${Date.now()}`;
     viewerUrlInput.value = viewerUrl;
     expiresAt.textContent = "Expires: Never (permanent for now)";
     result.classList.remove("hidden");
-    setMessage("Done. Share this QR link or manage it from Gallery.", false);
+    setMessage(`Done. Uploaded ${rows.length} GIF${rows.length === 1 ? "" : "s"}.`, false);
+
+    resetGifRows();
+
+    if (groupGifsSection && !groupGifsSection.classList.contains("hidden")) {
+      await loadGroupGifs();
+    }
   } catch (error) {
     setMessage(error.message || "Something went wrong.", true);
   } finally {
@@ -357,6 +407,10 @@ function updateAuthStatus(user) {
   if (accountQuickStatus) {
     accountQuickStatus.textContent = summary;
   }
+
+  if (!currentUser) {
+    resetGroupGifsState();
+  }
 }
 
 function setAuthStatus(text) {
@@ -376,11 +430,277 @@ function getToken() {
 
 function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
+  resetGroupGifsState();
 }
 
 function setMessage(text, isError) {
   formMessage.textContent = text;
   formMessage.classList.toggle("error", Boolean(isError));
+}
+
+function initGroupGifsToggle() {
+  if (!toggleGroupGifsBtn || !groupGifsSection) {
+    return;
+  }
+
+  toggleGroupGifsBtn.addEventListener("click", async () => {
+    const shouldOpen = groupGifsSection.classList.contains("hidden");
+    groupGifsSection.classList.toggle("hidden", !shouldOpen);
+    toggleGroupGifsBtn.setAttribute("aria-expanded", String(shouldOpen));
+
+    if (shouldOpen && (!groupGifsLoadedOnce || !groupGifsList?.children.length)) {
+      await loadGroupGifs();
+    }
+  });
+}
+
+function initAddMoreGifs() {
+  if (!addGifInputBtn || !gifRows) {
+    return;
+  }
+
+  addGifInputBtn.addEventListener("click", () => {
+    const rowIndex = gifRows.querySelectorAll(".gif-upload-row").length + 1;
+    const row = document.createElement("div");
+    row.className = "gif-upload-row";
+    row.setAttribute("data-row-index", String(rowIndex));
+    row.innerHTML = `
+      <input id="gifInput${rowIndex}" name="gif" type="file" accept="image/gif" required />
+      <input class="gif-text-input" name="overlayTextItem" type="text" maxlength="60" placeholder="Top text for GIF ${rowIndex} (optional)" />
+      <button type="button" class="ghost-btn remove-gif-row-btn" aria-label="Remove GIF ${rowIndex}">Remove</button>
+    `;
+
+    const removeBtn = row.querySelector(".remove-gif-row-btn");
+    removeBtn?.addEventListener("click", () => {
+      row.remove();
+      refreshGifRowPlaceholders();
+    });
+
+    gifRows.appendChild(row);
+    const fileInput = row.querySelector('input[name="gif"]');
+    fileInput?.focus();
+  });
+}
+
+function refreshGifRowPlaceholders() {
+  if (!gifRows) {
+    return;
+  }
+
+  const rows = Array.from(gifRows.querySelectorAll(".gif-upload-row"));
+  rows.forEach((row, index) => {
+    const labelIndex = index + 1;
+    row.setAttribute("data-row-index", String(labelIndex));
+    const textInput = row.querySelector('.gif-text-input');
+    if (textInput) {
+      textInput.placeholder = `Top text for GIF ${labelIndex} (optional)`;
+    }
+    const removeBtn = row.querySelector(".remove-gif-row-btn");
+    if (removeBtn) {
+      removeBtn.setAttribute("aria-label", `Remove GIF ${labelIndex}`);
+    }
+  });
+}
+
+function getSelectedGifRows() {
+  if (!gifRows) {
+    const fallbackFile = gifInput?.files?.[0];
+    return fallbackFile ? [{ file: fallbackFile, overlayText: "" }] : [];
+  }
+
+  return Array.from(gifRows.querySelectorAll(".gif-upload-row"))
+    .map((row) => ({
+      file: row.querySelector('input[name="gif"]')?.files?.[0],
+      overlayText: String(row.querySelector('.gif-text-input')?.value || "").trim().slice(0, 60)
+    }))
+    .filter((row) => Boolean(row.file));
+}
+
+function resetGifRows() {
+  if (!gifRows) {
+    if (gifInput) {
+      gifInput.value = "";
+    }
+    return;
+  }
+
+  const firstRow = gifRows.querySelector(".gif-upload-row");
+  if (!firstRow) {
+    return;
+  }
+
+  const firstFile = firstRow.querySelector('input[name="gif"]');
+  const firstText = firstRow.querySelector('.gif-text-input');
+  if (firstFile) {
+    firstFile.value = "";
+    firstFile.required = true;
+  }
+  if (firstText) {
+    firstText.value = "";
+  }
+
+  gifRows.innerHTML = "";
+  gifRows.appendChild(firstRow);
+  refreshGifRowPlaceholders();
+}
+
+async function loadGroupGifs() {
+  if (!groupGifsStatus || !groupGifsList) {
+    return;
+  }
+
+  const token = getToken();
+  if (!token) {
+    groupGifsStatus.textContent = "Login to view your grouped GIF uploads.";
+    groupGifsList.innerHTML = "";
+    groupGifsLoadedOnce = false;
+    return;
+  }
+
+  groupGifsStatus.textContent = "Loading grouped uploads...";
+
+  try {
+    const response = await fetch("/api/items", {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      if (response.status === 401) {
+        clearToken();
+        updateAuthStatus(null);
+      }
+      throw new Error(data.error || "Unable to load grouped uploads.");
+    }
+
+    renderGroupGifs(Array.isArray(data) ? data : []);
+    groupGifsLoadedOnce = true;
+  } catch (error) {
+    groupGifsStatus.textContent = error.message || "Failed to load grouped uploads.";
+    groupGifsList.innerHTML = "";
+  }
+}
+
+function renderGroupGifs(items) {
+  if (!groupGifsStatus || !groupGifsList) {
+    return;
+  }
+
+  if (!items.length) {
+    groupGifsStatus.textContent = "No uploads found yet. Upload your first GIF above.";
+    groupGifsList.innerHTML = "";
+    return;
+  }
+
+  const sorted = [...items].sort((a, b) => {
+    const aTime = new Date(a.createdAt || 0).getTime();
+    const bTime = new Date(b.createdAt || 0).getTime();
+    return bTime - aTime;
+  });
+
+  const groups = groupItems(sorted);
+
+  groupGifsStatus.textContent = `Showing ${sorted.length} upload${sorted.length === 1 ? "" : "s"} in ${groups.length} group${groups.length === 1 ? "" : "s"}.`;
+  groupGifsList.innerHTML = groups.map((group) => {
+    const groupViewerUrl = group.groupId
+      ? `${window.location.origin}/scan?target=${encodeURIComponent(`g:${group.groupId}`)}`
+      : "";
+    const groupQrUrl = group.groupId
+      ? `/api/group-qr/${encodeURIComponent(group.groupId)}?t=${Date.now()}`
+      : "";
+    const groupLabel = group.groupId
+      ? `Grouped Upload (${group.items.length} GIF${group.items.length === 1 ? "" : "s"})`
+      : "Single Upload";
+
+    const itemsHtml = group.items.map((item) => {
+      const viewerUrl = `${window.location.origin}/scan?target=${encodeURIComponent(`v:${item.id}`)}`;
+      const safeText = escapeHtml(item.overlayText || "No top text");
+      const created = escapeHtml(formatDate(item.createdAt));
+      const scanCount = Number(item.scanCount || 0);
+      return `
+      <article class="group-gif-card">
+        <div class="group-gif-preview">
+          <img src="${item.gifUrl}" alt="Uploaded GIF ${safeText}" loading="lazy" />
+        </div>
+        <div class="group-gif-details">
+          <p class="group-gif-title">${safeText}</p>
+          <p class="hint">Created: ${created}</p>
+          <p class="hint">Scans: ${scanCount}</p>
+          <label class="field compact-field">
+            <span>Viewer URL</span>
+            <input type="text" value="${viewerUrl}" readonly />
+          </label>
+        </div>
+        <div class="group-gif-qr">
+          <img src="/api/qr/${encodeURIComponent(item.id)}?t=${Date.now()}" alt="QR for upload ${safeText}" loading="lazy" />
+        </div>
+      </article>
+    `;
+    }).join("");
+
+    const groupMetaHtml = group.groupId
+      ? `
+        <article class="group-gif-card group-master-card">
+          <div class="group-gif-preview group-master-preview">
+            <img src="${group.items[0].gifUrl}" alt="Group preview" loading="lazy" />
+          </div>
+          <div class="group-gif-details">
+            <p class="group-gif-title">Single QR for this group</p>
+            <label class="field compact-field">
+              <span>Group Viewer URL</span>
+              <input type="text" value="${groupViewerUrl}" readonly />
+            </label>
+          </div>
+          <div class="group-gif-qr">
+            <img src="${groupQrUrl}" alt="Group QR" loading="lazy" />
+          </div>
+        </article>
+      `
+      : "";
+
+    return `
+      <section class="upload-group">
+        <p class="upload-group-head">${groupLabel}</p>
+        ${groupMetaHtml}
+        <div class="group-gifs-grid">${itemsHtml}</div>
+      </section>
+    `;
+  }).join("");
+}
+
+function groupItems(items) {
+  const map = new Map();
+
+  for (const item of items) {
+    const key = item.groupId || `single-${item.id}`;
+    if (!map.has(key)) {
+      map.set(key, {
+        groupId: item.groupId || "",
+        items: []
+      });
+    }
+    map.get(key).items.push(item);
+  }
+
+  return Array.from(map.values());
+}
+
+function resetGroupGifsState() {
+  if (groupGifsSection) {
+    groupGifsSection.classList.add("hidden");
+  }
+  if (toggleGroupGifsBtn) {
+    toggleGroupGifsBtn.setAttribute("aria-expanded", "false");
+  }
+  if (groupGifsStatus) {
+    groupGifsStatus.textContent = "Open Group GIFs to view your uploads.";
+  }
+  if (groupGifsList) {
+    groupGifsList.innerHTML = "";
+  }
+  groupGifsLoadedOnce = false;
 }
 
 function initAccountModal() {
@@ -533,6 +853,26 @@ function relativeLuminance(rgb) {
     return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
   });
   return 0.2126 * norm[0] + 0.7152 * norm[1] + 0.0722 * norm[2];
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function formatDate(value) {
+  if (!value) {
+    return "Unknown";
+  }
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    return "Unknown";
+  }
+  return d.toLocaleString();
 }
 
 bootstrapAuth();
