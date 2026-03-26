@@ -5,9 +5,14 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "migrate:supabase": "node scripts/migrate-to-supabase.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.4",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",

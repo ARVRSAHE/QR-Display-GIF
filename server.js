@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const QRCode = require("qrcode");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const { createPersistenceProvider } = require("./lib/persistence");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -20,6 +21,72 @@ const DEFAULT_QR_DARK = "#221D23";
 const DEFAULT_QR_LIGHT = "#D0E37F";
 const ADMIN_USERNAME = String(process.env.ADMIN_USERNAME || "admin").trim().toLowerCase();
 const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "abc123456789");
+const PERSISTENCE_MODE = String(process.env.PERSISTENCE_MODE || "local").toLowerCase();
+const SUPABASE_URL = process.env.SUPABASE_URL || "";
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || "gifs";
+const SUPABASE_USERS_TABLE = process.env.SUPABASE_USERS_TABLE || "users";
+const SUPABASE_UPLOADS_TABLE = process.env.SUPABASE_UPLOADS_TABLE || "uploads";
+const PUBLIC_BASE_URL = normalizeBaseUrl(process.env.PUBLIC_BASE_URL || "");
+const IS_PRODUCTION = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+
+let persistenceProvider;
+
+function validateStartupEnv() {
+  const allowedModes = new Set(["local", "supabase"]);
+  const errors = [];
+
+  if (!allowedModes.has(PERSISTENCE_MODE)) {
+    errors.push("PERSISTENCE_MODE must be 'local' or 'supabase'.");
+  }
+
+  if (PERSISTENCE_MODE === "supabase") {
+    if (!SUPABASE_URL) {
+      errors.push("SUPABASE_URL is required when PERSISTENCE_MODE=supabase.");
+    }
+    if (!SUPABASE_SERVICE_ROLE_KEY) {
+      errors.push("SUPABASE_SERVICE_ROLE_KEY is required when PERSISTENCE_MODE=supabase.");
+    }
+  }
+
+  if (IS_PRODUCTION) {
+    if (!PUBLIC_BASE_URL) {
+      errors.push("PUBLIC_BASE_URL is required in production.");
+    } else if (!/^https:\/\//i.test(PUBLIC_BASE_URL)) {
+      errors.push("PUBLIC_BASE_URL must start with https:// in production.");
+    }
+
+    if (!JWT_SECRET || JWT_SECRET === "dev-only-secret-change-in-production") {
+      errors.push("JWT_SECRET must be set to a strong secret in production.");
+    }
+
+    if (!isValidUsername(ADMIN_USERNAME) || ADMIN_USERNAME === "admin") {
+      errors.push("ADMIN_USERNAME must be a non-default valid username in production.");
+    }
+
+    if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 12 || ADMIN_PASSWORD === "abc123456789") {
+      errors.push("ADMIN_PASSWORD must be non-default and at least 12 characters in production.");
+    }
+  }
+
+  if (errors.length) {
+    throw new Error(`Invalid startup configuration:\n- ${errors.join("\n- ")}`);
+  }
+}
+
+function initializePersistenceProvider() {
+  persistenceProvider = createPersistenceProvider({
+    mode: PERSISTENCE_MODE,
+    dbPath: DB_PATH,
+    usersPath: USERS_PATH,
+    uploadDir: UPLOAD_DIR,
+    supabaseUrl: SUPABASE_URL,
+    supabaseServiceRoleKey: SUPABASE_SERVICE_ROLE_KEY,
+    supabaseBucket: SUPABASE_BUCKET,
+    usersTable: SUPABASE_USERS_TABLE,
+    uploadsTable: SUPABASE_UPLOADS_TABLE
+  });
+}
 
 app.set("trust proxy", true);
 
@@ -71,20 +138,20 @@ function writeJsonArray(filePath, data) {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
 }
 
-function readDb() {
-  return readJsonArray(DB_PATH);
+async function readDb() {
+  return persistenceProvider.listUploads();
 }
 
-function writeDb(data) {
-  writeJsonArray(DB_PATH, data);
+async function writeDb(data) {
+  await persistenceProvider.upsertUploads(data);
 }
 
-function readUsers() {
-  return readJsonArray(USERS_PATH);
+async function readUsers() {
+  return persistenceProvider.listUsers();
 }
 
-function writeUsers(data) {
-  writeJsonArray(USERS_PATH, data);
+async function writeUsers(data) {
+  await persistenceProvider.upsertUsers(data);
 }
 
 function nowIso() {
@@ -165,9 +232,8 @@ function normalizeBaseUrl(url) {
 }
 
 function resolvePublicBaseUrl(req) {
-  const envBase = normalizeBaseUrl(process.env.PUBLIC_BASE_URL || "");
-  if (envBase) {
-    return envBase;
+  if (PUBLIC_BASE_URL) {
+    return PUBLIC_BASE_URL;
   }
 
   const forwardedHost = firstHeaderValue(req.headers["x-forwarded-host"]);
@@ -208,7 +274,7 @@ function authFromHeader(req) {
   return header.slice(7).trim();
 }
 
-function optionalAuth(req, _res, next) {
+async function optionalAuth(req, _res, next) {
   const token = authFromHeader(req);
   if (!token) {
     req.user = null;
@@ -218,9 +284,7 @@ function optionalAuth(req, _res, next) {
 
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    const users = readUsers();
-    const user = users.find((x) => x.id === payload.sub);
-    req.user = user || null;
+    req.user = await persistenceProvider.getUserById(payload.sub);
   } catch (_err) {
     req.user = null;
   }
@@ -235,7 +299,7 @@ function requireAuth(req, res, next) {
       return;
     }
     next();
-  });
+  }).catch(next);
 }
 
 function requireAdmin(req, res, next) {
@@ -248,8 +312,14 @@ function requireAdmin(req, res, next) {
   });
 }
 
-function migrateUploads() {
-  const db = readDb();
+function asyncHandler(fn) {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
+
+async function migrateUploads() {
+  const db = await readDb();
   let changed = false;
 
   for (const item of db) {
@@ -271,12 +341,12 @@ function migrateUploads() {
   }
 
   if (changed) {
-    writeDb(db);
+    await writeDb(db);
   }
 }
 
-function migrateUsers() {
-  const users = readUsers();
+async function migrateUsers() {
+  const users = await readUsers();
   let changed = false;
   const used = new Set();
 
@@ -315,12 +385,12 @@ function migrateUsers() {
   }
 
   if (changed) {
-    writeUsers(users);
+    await writeUsers(users);
   }
 }
 
-function ensureAdminAccount() {
-  const users = readUsers();
+async function ensureAdminAccount() {
+  const users = await readUsers();
   let admin = users.find((u) => u.username === ADMIN_USERNAME);
 
   if (!admin) {
@@ -332,7 +402,7 @@ function ensureAdminAccount() {
       createdAt: nowIso()
     };
     users.push(admin);
-    writeUsers(users);
+    await writeUsers(users);
     return;
   }
 
@@ -348,7 +418,7 @@ function ensureAdminAccount() {
     delete admin.resetExpiresAt;
   }
 
-  writeUsers(users);
+  await writeUsers(users);
 }
 
 function toItemResponse(item, reqUser) {
@@ -357,7 +427,7 @@ function toItemResponse(item, reqUser) {
     id: item.id,
     groupId: sanitizeGroupId(item.groupId || ""),
     overlayText: item.overlayText,
-    gifUrl: `/${item.gifPath}`,
+    gifUrl: persistenceProvider.resolveGifUrl(item.gifPath),
     createdAt: item.createdAt,
     expiresAt: item.expiresAt,
     scanCount: item.scanCount,
@@ -367,31 +437,19 @@ function toItemResponse(item, reqUser) {
   };
 }
 
-function deleteUploadsForUser(userId) {
-  const db = readDb();
-  const owned = db.filter((item) => item.userId === userId);
-  const remaining = db.filter((item) => item.userId !== userId);
+async function deleteUploadsForUser(userId) {
+  const owned = await persistenceProvider.deleteUploadsByUserId(userId);
 
   for (const item of owned) {
-    const absoluteGif = path.join(__dirname, item.gifPath || "");
-    if (absoluteGif.startsWith(UPLOAD_DIR) && fs.existsSync(absoluteGif)) {
-      try {
-        fs.unlinkSync(absoluteGif);
-      } catch (_err) {
-        // Ignore file delete failures.
-      }
+    try {
+      await persistenceProvider.deleteStoredGif(item.gifPath);
+    } catch (_err) {
+      // Ignore file delete failures.
     }
   }
 
-  writeDb(remaining);
   return owned.length;
 }
-
-ensureFile(DB_PATH, []);
-ensureFile(USERS_PATH, []);
-migrateUploads();
-migrateUsers();
-ensureAdminAccount();
 
 app.post("/api/auth/register", async (req, res) => {
   try {
@@ -408,8 +466,8 @@ app.post("/api/auth/register", async (req, res) => {
       return;
     }
 
-    const users = readUsers();
-    if (users.some((x) => x.username === username)) {
+    const existing = await persistenceProvider.getUserByUsername(username);
+    if (existing) {
       res.status(409).json({ error: "Username already taken." });
       return;
     }
@@ -423,8 +481,7 @@ app.post("/api/auth/register", async (req, res) => {
       createdAt: nowIso()
     };
 
-    users.push(user);
-    writeUsers(users);
+    await persistenceProvider.createUser(user);
 
     const token = createToken(user);
     res.status(201).json({ user: publicUser(user), token });
@@ -438,8 +495,7 @@ app.post("/api/auth/login", async (req, res) => {
     const username = sanitizeUsername(req.body?.username);
     const password = String(req.body?.password || "");
 
-    const users = readUsers();
-    const user = users.find((x) => x.username === username);
+    const user = await persistenceProvider.getUserByUsername(username);
     if (!user) {
       res.status(401).json({ error: "Invalid credentials." });
       return;
@@ -481,8 +537,7 @@ app.post("/api/auth/password/change", requireAuth, async (req, res) => {
       return;
     }
 
-    const users = readUsers();
-    const user = users.find((u) => u.id === req.user.id);
+    const user = await persistenceProvider.getUserById(req.user.id);
     if (!user) {
       res.status(404).json({ error: "User not found." });
       return;
@@ -497,7 +552,7 @@ app.post("/api/auth/password/change", requireAuth, async (req, res) => {
     user.passwordHash = await bcrypt.hash(newPassword, 10);
     delete user.resetToken;
     delete user.resetExpiresAt;
-    writeUsers(users);
+    await persistenceProvider.replaceUser(user);
 
     res.json({ success: true, message: "Password updated successfully." });
   } catch (err) {
@@ -505,15 +560,14 @@ app.post("/api/auth/password/change", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/api/auth/reset/request", (req, res) => {
+app.post("/api/auth/reset/request", asyncHandler(async (req, res) => {
   const username = sanitizeUsername(req.body?.username);
   if (!isValidUsername(username)) {
     res.status(400).json({ error: "Valid username is required." });
     return;
   }
 
-  const users = readUsers();
-  const user = users.find((x) => x.username === username);
+  const user = await persistenceProvider.getUserByUsername(username);
   if (!user) {
     res.json({
       success: true,
@@ -526,14 +580,14 @@ app.post("/api/auth/reset/request", (req, res) => {
   const resetExpiresAt = Date.now() + 15 * 60 * 1000;
   user.resetToken = resetToken;
   user.resetExpiresAt = resetExpiresAt;
-  writeUsers(users);
+  await persistenceProvider.replaceUser(user);
 
   res.json({
     success: true,
     message: "Reset token generated. In production this would be sent securely.",
     resetToken
   });
-});
+}));
 
 app.post("/api/auth/reset/confirm", async (req, res) => {
   try {
@@ -556,8 +610,7 @@ app.post("/api/auth/reset/confirm", async (req, res) => {
       return;
     }
 
-    const users = readUsers();
-    const user = users.find((x) => x.username === username);
+    const user = await persistenceProvider.getUserByUsername(username);
     if (!user || !user.resetToken || user.resetToken !== token) {
       res.status(400).json({ error: "Invalid reset token." });
       return;
@@ -571,7 +624,7 @@ app.post("/api/auth/reset/confirm", async (req, res) => {
     user.passwordHash = await bcrypt.hash(newPassword, 10);
     delete user.resetToken;
     delete user.resetExpiresAt;
-    writeUsers(users);
+    await persistenceProvider.replaceUser(user);
 
     res.json({ success: true, message: "Password updated successfully." });
   } catch (err) {
@@ -579,27 +632,10 @@ app.post("/api/auth/reset/confirm", async (req, res) => {
   }
 });
 
-app.get("/api/admin/users", requireAdmin, (req, res) => {
-  const users = readUsers();
-  const db = readDb();
-  const counts = new Map();
-
-  for (const item of db) {
-    if (item.userId) {
-      counts.set(item.userId, (counts.get(item.userId) || 0) + 1);
-    }
-  }
-
-  const payload = users.map((u) => ({
-    id: u.id,
-    username: u.username,
-    role: u.role || "user",
-    createdAt: u.createdAt,
-    uploadsCount: counts.get(u.id) || 0
-  }));
-
+app.get("/api/admin/users", requireAdmin, asyncHandler(async (req, res) => {
+  const payload = await persistenceProvider.listUsersWithUploadCounts();
   res.json(payload);
-});
+}));
 
 app.patch("/api/admin/users/:id/password", requireAdmin, async (req, res) => {
   try {
@@ -609,8 +645,7 @@ app.patch("/api/admin/users/:id/password", requireAdmin, async (req, res) => {
       return;
     }
 
-    const users = readUsers();
-    const user = users.find((u) => u.id === req.params.id);
+    const user = await persistenceProvider.getUserById(req.params.id);
     if (!user) {
       res.status(404).json({ error: "User not found." });
       return;
@@ -619,7 +654,7 @@ app.patch("/api/admin/users/:id/password", requireAdmin, async (req, res) => {
     user.passwordHash = await bcrypt.hash(newPassword, 10);
     delete user.resetToken;
     delete user.resetExpiresAt;
-    writeUsers(users);
+    await persistenceProvider.replaceUser(user);
 
     res.json({ success: true, user: publicUser(user) });
   } catch (err) {
@@ -627,32 +662,29 @@ app.patch("/api/admin/users/:id/password", requireAdmin, async (req, res) => {
   }
 });
 
-app.delete("/api/admin/users/:id", requireAdmin, (req, res) => {
-  const users = readUsers();
-  const idx = users.findIndex((u) => u.id === req.params.id);
-  if (idx === -1) {
+app.delete("/api/admin/users/:id", requireAdmin, asyncHandler(async (req, res) => {
+  const user = await persistenceProvider.getUserById(req.params.id);
+  if (!user) {
     res.status(404).json({ error: "User not found." });
     return;
   }
 
-  const user = users[idx];
   if (user.id === req.user.id) {
     res.status(400).json({ error: "Admin cannot delete their own account." });
     return;
   }
 
-  users.splice(idx, 1);
-  writeUsers(users);
-  const removedUploads = deleteUploadsForUser(user.id);
+  await persistenceProvider.deleteUserById(user.id);
+  const removedUploads = await deleteUploadsForUser(user.id);
 
   res.json({
     success: true,
     removedUserId: user.id,
     removedUploads
   });
-});
+}));
 
-app.post("/api/upload", requireAuth, upload.single("gif"), (req, res) => {
+app.post("/api/upload", requireAuth, upload.single("gif"), async (req, res) => {
   try {
     if (!req.file) {
       res.status(400).json({ error: "GIF file is required." });
@@ -661,7 +693,7 @@ app.post("/api/upload", requireAuth, upload.single("gif"), (req, res) => {
 
     const overlayText = sanitizeText(req.body.overlayText || "");
     const id = `holo-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    const relativeGifPath = path.join("uploads", req.file.filename).replace(/\\/g, "/");
+    const relativeGifPath = await persistenceProvider.storeUploadedGif(req.file, id);
     const customization = normalizeCustomizationFromBody(req.body);
     const groupId = sanitizeGroupId(req.body.groupId || "");
 
@@ -677,9 +709,7 @@ app.post("/api/upload", requireAuth, upload.single("gif"), (req, res) => {
       customization
     };
 
-    const db = readDb();
-    db.push(entry);
-    writeDb(db);
+    await persistenceProvider.createUpload(entry);
 
     const viewerPath = `/scan?target=${encodeURIComponent(`v:${id}`)}`;
     const viewerUrl = `${resolvePublicBaseUrl(req)}${viewerPath}`;
@@ -692,66 +722,60 @@ app.post("/api/upload", requireAuth, upload.single("gif"), (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message || "Upload failed." });
+  } finally {
+    if (PERSISTENCE_MODE === "supabase" && req.file?.path && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (_err) {
+        // Ignore temp file cleanup failures.
+      }
+    }
   }
 });
 
-app.get("/api/item/:id", optionalAuth, (req, res) => {
-  const db = readDb();
-  const item = db.find((x) => x.id === req.params.id);
+app.get("/api/item/:id", optionalAuth, asyncHandler(async (req, res) => {
+  const item = await persistenceProvider.incrementScanByUploadId(req.params.id);
 
   if (!item) {
     res.status(404).json({ error: "Not found." });
     return;
   }
 
-  item.scanCount += 1;
-  writeDb(db);
-
   res.json(toItemResponse(item, req.user));
-});
+}));
 
-app.get("/api/group/:groupId", optionalAuth, (req, res) => {
+app.get("/api/group/:groupId", optionalAuth, asyncHandler(async (req, res) => {
   const groupId = sanitizeGroupId(req.params.groupId || "");
   if (!groupId) {
     res.status(400).json({ error: "Invalid group id." });
     return;
   }
 
-  const db = readDb();
-  const items = db
-    .filter((x) => sanitizeGroupId(x.groupId || "") === groupId)
-    .sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
+  const items = await persistenceProvider.incrementScanByGroupId(groupId);
 
   if (!items.length) {
     res.status(404).json({ error: "Group not found." });
     return;
   }
 
-  for (const item of items) {
-    item.scanCount = Number(item.scanCount || 0) + 1;
-  }
-  writeDb(db);
-
   res.json({
     groupId,
     createdAt: items[0].createdAt,
     items: items.map((item) => toItemResponse(item, req.user))
   });
-});
+}));
 
-app.get("/api/items", requireAuth, (req, res) => {
-  const db = readDb();
+app.get("/api/items", requireAuth, asyncHandler(async (req, res) => {
   const isAdmin = Boolean(req.user && (req.user.role || "user") === "admin");
-  const items = req.user
-    ? (isAdmin ? db : db.filter((item) => item.userId === req.user.id))
-    : db;
+  const items = isAdmin
+    ? await persistenceProvider.listAllUploads()
+    : await persistenceProvider.listUploadsByUserId(req.user.id);
 
   res.json(items.map((item) => toItemResponse(item, req.user)));
-});
+}));
 
-app.patch("/api/items/:id", requireAuth, (req, res) => {
-  const db = readDb();
-  const item = db.find((x) => x.id === req.params.id);
+app.patch("/api/items/:id", requireAuth, asyncHandler(async (req, res) => {
+  const item = await persistenceProvider.getUploadById(req.params.id);
 
   if (!item) {
     res.status(404).json({ error: "Not found." });
@@ -774,44 +798,36 @@ app.patch("/api/items/:id", requireAuth, (req, res) => {
     item.customization = ensureCustomization(item);
   }
 
-  writeDb(db);
+  await persistenceProvider.replaceUpload(item);
   res.json(toItemResponse(item, req.user));
-});
+}));
 
-app.delete("/api/items/:id", requireAuth, (req, res) => {
-  const db = readDb();
-  const idx = db.findIndex((x) => x.id === req.params.id);
-
-  if (idx === -1) {
+app.delete("/api/items/:id", requireAuth, asyncHandler(async (req, res) => {
+  const item = await persistenceProvider.getUploadById(req.params.id);
+  if (!item) {
     res.status(404).json({ error: "Not found." });
     return;
   }
 
-  const item = db[idx];
   const isAdmin = (req.user.role || "user") === "admin";
   if (!item.userId || (item.userId !== req.user.id && !isAdmin)) {
     res.status(403).json({ error: "Only the owner or admin can delete this item." });
     return;
   }
 
-  db.splice(idx, 1);
-  writeDb(db);
+  await persistenceProvider.deleteUploadById(item.id);
 
-  const absoluteGif = path.join(__dirname, item.gifPath || "");
-  if (absoluteGif.startsWith(UPLOAD_DIR) && fs.existsSync(absoluteGif)) {
-    try {
-      fs.unlinkSync(absoluteGif);
-    } catch (_err) {
-      // Ignore file deletion issues and still return success for metadata delete.
-    }
+  try {
+    await persistenceProvider.deleteStoredGif(item.gifPath);
+  } catch (_err) {
+    // Ignore file deletion issues and still return success for metadata delete.
   }
 
   res.json({ success: true });
-});
+}));
 
-app.get("/api/qr/:id", async (req, res) => {
-  const db = readDb();
-  const item = db.find((x) => x.id === req.params.id);
+app.get("/api/qr/:id", asyncHandler(async (req, res) => {
+  const item = await persistenceProvider.getUploadById(req.params.id);
 
   if (!item) {
     res.status(404).json({ error: "Not found." });
@@ -823,32 +839,27 @@ app.get("/api/qr/:id", async (req, res) => {
   const viewerUrl = `${baseUrl}/scan?target=${encodeURIComponent(`v:${item.id}`)}`;
   const customization = ensureCustomization(item);
 
-  try {
-    const pngBuffer = await QRCode.toBuffer(viewerUrl, {
-      type: "png",
-      width: 360,
-      margin: 2,
-      color: {
-        dark: customization.colors.dark,
-        light: customization.colors.light
-      }
-    });
-    res.setHeader("Content-Type", "image/png");
-    res.send(pngBuffer);
-  } catch (err) {
-    res.status(500).json({ error: err.message || "QR generation failed." });
-  }
-});
+  const pngBuffer = await QRCode.toBuffer(viewerUrl, {
+    type: "png",
+    width: 360,
+    margin: 2,
+    color: {
+      dark: customization.colors.dark,
+      light: customization.colors.light
+    }
+  });
+  res.setHeader("Content-Type", "image/png");
+  res.send(pngBuffer);
+}));
 
-app.get("/api/group-qr/:groupId", async (req, res) => {
+app.get("/api/group-qr/:groupId", asyncHandler(async (req, res) => {
   const groupId = sanitizeGroupId(req.params.groupId || "");
   if (!groupId) {
     res.status(400).json({ error: "Invalid group id." });
     return;
   }
 
-  const db = readDb();
-  const hasGroup = db.some((x) => sanitizeGroupId(x.groupId || "") === groupId);
+  const hasGroup = await persistenceProvider.groupExists(groupId);
   if (!hasGroup) {
     res.status(404).json({ error: "Group not found." });
     return;
@@ -858,22 +869,18 @@ app.get("/api/group-qr/:groupId", async (req, res) => {
   const baseUrl = requestedBase || resolvePublicBaseUrl(req);
   const groupUrl = `${baseUrl}/scan?target=${encodeURIComponent(`g:${groupId}`)}`;
 
-  try {
-    const pngBuffer = await QRCode.toBuffer(groupUrl, {
-      type: "png",
-      width: 360,
-      margin: 2,
-      color: {
-        dark: "#221D23",
-        light: "#D0E37F"
-      }
-    });
-    res.setHeader("Content-Type", "image/png");
-    res.send(pngBuffer);
-  } catch (err) {
-    res.status(500).json({ error: err.message || "QR generation failed." });
-  }
-});
+  const pngBuffer = await QRCode.toBuffer(groupUrl, {
+    type: "png",
+    width: 360,
+    margin: 2,
+    color: {
+      dark: "#221D23",
+      light: "#D0E37F"
+    }
+  });
+  res.setHeader("Content-Type", "image/png");
+  res.send(pngBuffer);
+}));
 
 app.get("/v/:id", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "viewer.html"));
@@ -909,6 +916,27 @@ app.use((err, _req, res, _next) => {
   res.status(400).json({ error: err.message || "Request failed." });
 });
 
-app.listen(PORT, () => {
-  console.log(`QR Display GIF app running at http://localhost:${PORT}`);
-});
+async function bootstrap() {
+  validateStartupEnv();
+  initializePersistenceProvider();
+
+  if (PERSISTENCE_MODE === "local") {
+    ensureFile(DB_PATH, []);
+    ensureFile(USERS_PATH, []);
+  }
+
+  await migrateUploads();
+  await migrateUsers();
+  await ensureAdminAccount();
+}
+
+bootstrap()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`QR Display GIF app running at http://localhost:${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error("Startup failed:", err.message || err);
+    process.exit(1);
+  });
