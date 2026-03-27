@@ -13,6 +13,7 @@ const fallbackText = document.getElementById("fallbackText");
 const fallbackGif = document.getElementById("fallbackGif");
 const groupFallbackGrid = document.getElementById("groupFallbackGrid");
 const fallbackBtn = document.getElementById("fallbackBtn");
+const cameraOnBtn = document.getElementById("cameraOnBtn");
 
 let detector = null;
 let stream = null;
@@ -34,6 +35,7 @@ let pendingTargetKey = "";
 const hologramContainer = document.getElementById("hologram-3d-container");
 let orientationEnabled = false;
 let userScale = 1;
+let currentEnlargedGiftId = null; // Track which gift is enlarged in group view
 const pinchState = {
   active: false,
   startDistance: 0,
@@ -44,9 +46,14 @@ fallbackBtn.addEventListener("click", () => {
   switchToFallback("Switched manually.");
 });
 
-// Prevent browser pinch zoom and map two-finger pinch to hologram scale.
+cameraOnBtn?.addEventListener("click", () => {
+  switchToCamera();
+});
+
+// Prevent browser pinch zoom and map two-finger pinch to hologram scale (only in camera mode).
 document.addEventListener("touchstart", (event) => {
-  if (!event.touches || event.touches.length !== 2) {
+  // Only allow pinch zoom when camera is running
+  if (!running || !event.touches || event.touches.length !== 2) {
     return;
   }
   pinchState.active = true;
@@ -56,7 +63,8 @@ document.addEventListener("touchstart", (event) => {
 }, { passive: false });
 
 document.addEventListener("touchmove", (event) => {
-  if (!event.touches || event.touches.length < 2) {
+  // Only allow pinch zoom when camera is running
+  if (!running || !event.touches || event.touches.length < 2) {
     return;
   }
 
@@ -82,12 +90,20 @@ document.addEventListener("touchend", () => {
 });
 
 document.addEventListener("gesturestart", (event) => {
+  // Only allow gesture zoom when camera is running
+  if (!running) {
+    return;
+  }
   pinchState.active = true;
   pinchState.startScale = userScale;
   event.preventDefault();
 }, { passive: false });
 
 document.addEventListener("gesturechange", (event) => {
+  // Only allow gesture zoom when camera is running
+  if (!running) {
+    return;
+  }
   if (typeof event.scale === "number") {
     userScale = clamp(pinchState.startScale * event.scale, 0.55, 2.4);
   }
@@ -96,6 +112,10 @@ document.addEventListener("gesturechange", (event) => {
 
 document.addEventListener("gestureend", (event) => {
   pinchState.active = false;
+  // Only allow gesture zoom when camera is running
+  if (!running) {
+    return;
+  }
   if (typeof event.scale === "number") {
     userScale = clamp(pinchState.startScale * event.scale, 0.55, 2.4);
   }
@@ -172,6 +192,19 @@ async function start() {
     targetPose.rotZ = 0;
     overlay.classList.remove("hidden");
   } else {
+    // Set initial pose so overlay is visible when QR is detected
+    targetPose.x = window.innerWidth / 2;
+    targetPose.y = window.innerHeight * 0.58;
+    targetPose.s = 1.0;
+    targetPose.z = 0;
+    targetPose.rotX = 0;
+    targetPose.rotY = 0;
+    targetPose.rotZ = 0;
+    // Start smooth values at initial position too
+    smooth.x = targetPose.x;
+    smooth.y = targetPose.y;
+    smooth.s = targetPose.s;
+    smooth.z = targetPose.z;
     overlay.classList.add("hidden");
   }
 
@@ -244,10 +277,12 @@ async function switchToTarget(type, id, force) {
 }
 
 function applyPayloadToViewer(payload) {
+  console.log("[GIF Viewer]", "Applying payload:", payload);
   overlay.classList.toggle("group-mode", isGroupView);
   fallbackCard?.classList.toggle("group-mode", isGroupView);
 
   if (!isGroupView) {
+    console.log("[GIF Viewer]", "Single GIF mode:", payload.gifUrl);
     overlayTextEl.textContent = payload.overlayText || "";
     fallbackText.textContent = payload.overlayText || "";
     gifImage.src = payload.gifUrl;
@@ -261,27 +296,84 @@ function applyPayloadToViewer(payload) {
   }
 
   const items = Array.isArray(payload.items) ? payload.items : [];
+  console.log("[GIF Viewer]", `Group GIF mode: ${items.length} items`);
+  console.log("[GIF Viewer]", "Items:", items);
   overlayTextEl.textContent = `Group GIFs (${items.length})`;
   fallbackText.textContent = `Group GIFs (${items.length})`;
   gifImage.classList.add("hidden");
   fallbackGif.classList.add("hidden");
 
-  const markup = items.map((item) => `
-    <article class="group-grid-item">
+  const markup = items.map((item, index) => `
+    <article class="group-grid-item" data-gift-index="${index}">
       <p class="holo-text">${escapeHtml(item.overlayText || "GIF")}</p>
-      <img class="gif-frame" src="${item.gifUrl}" alt="${escapeHtml(item.overlayText || "Group GIF")}" />
+      <img class="gif-frame" src="${item.gifUrl}" alt="${escapeHtml(item.overlayText || "Group GIF")}" loading="lazy" />
     </article>
   `).join("");
 
+  console.log("[GIF Viewer]", "Generated markup length:", markup.length);
+  
   if (groupOverlayGrid) {
+    console.log("[GIF Viewer]", "Setting groupOverlayGrid innerHTML");
     groupOverlayGrid.innerHTML = markup;
     groupOverlayGrid.classList.remove("hidden");
+    console.log("[GIF Viewer]", "groupOverlayGrid visible, items count:", groupOverlayGrid.children.length);
+    attachGroupGiftEventListeners(groupOverlayGrid);
   }
 
   if (groupFallbackGrid) {
     groupFallbackGrid.innerHTML = markup;
     groupFallbackGrid.classList.remove("hidden");
+    if (running) {
+      // Only attach event listeners in camera mode, not in fallback mode
+      attachGroupGiftEventListeners(groupFallbackGrid);
+    }
   }
+}
+
+function attachGroupGiftEventListeners(gridContainer) {
+  const items = gridContainer.querySelectorAll(".group-grid-item");
+  
+  items.forEach((item) => {
+    item.addEventListener("click", (event) => {
+      // Don't enlarge if clicking a link or interactive element
+      if (event.target.tagName === "A" || event.target.closest("button")) {
+        return;
+      }
+      
+      const index = item.getAttribute("data-gift-index");
+      
+      // If this gift is already enlarged, close it
+      if (currentEnlargedGiftId === index) {
+        item.classList.remove("gift-enlarged");
+        currentEnlargedGiftId = null;
+        return;
+      }
+      
+      // Close any previously enlarged gift
+      if (currentEnlargedGiftId !== null) {
+        const previousItem = gridContainer.querySelector(`[data-gift-index="${currentEnlargedGiftId}"]`);
+        if (previousItem) {
+          previousItem.classList.remove("gift-enlarged");
+        }
+      }
+      
+      // Enlarge the clicked gift
+      item.classList.add("gift-enlarged");
+      currentEnlargedGiftId = index;
+    });
+  });
+  
+  // Add click handler to the container to close enlarged gift when clicking outside
+  gridContainer.addEventListener("click", (event) => {
+    // Only close if clicking directly on the container, not on items
+    if (event.target === gridContainer && currentEnlargedGiftId !== null) {
+      const enlargedItem = gridContainer.querySelector(`[data-gift-index="${currentEnlargedGiftId}"]`);
+      if (enlargedItem) {
+        enlargedItem.classList.remove("gift-enlarged");
+        currentEnlargedGiftId = null;
+      }
+    }
+  });
 }
 
 async function startCamera() {
@@ -500,8 +592,9 @@ function updateTargetPose(marker, sourceW, sourceH) {
 
   // Stronger distance response so zoom-in/out visibly changes hologram size.
   const markerScaleBase = clamp(Math.pow(qrPixelWidth / 170, 1.18), 0.45, 1.85);
-  const groupScaleBoost = isGroupView ? 1.35 : 1;
-  const markerScale = clamp(markerScaleBase * userScale * groupScaleBoost, 0.35, 3.2);
+  const groupScaleBoost = isGroupView ? 1.1 : 1;
+  const minScale = isGroupView ? 0.45 : 0.35;
+  const markerScale = clamp(markerScaleBase * userScale * groupScaleBoost, minScale, 3.2);
   const depthZ = clamp((markerScale - 0.9) * 180, -90, 150);
 
   // Keep centered over QR while still floating in depth.
@@ -554,7 +647,7 @@ function startRenderLoop() {
 
     if (cameraOnlyMode) {
       // Gentle floating animation in camera-only mode.
-      targetPose.s = clamp((isGroupView ? 1.2 : 0.95) * userScale, 0.4, 2.8);
+      targetPose.s = clamp((isGroupView ? 1.0 : 0.95) * userScale, 0.4, 2.8);
       targetPose.z = 18 + Math.sin(Date.now() * 0.0022) * 4;
       targetPose.y = window.innerHeight * 0.58;
     }
@@ -564,7 +657,13 @@ function startRenderLoop() {
 
     overlay.style.left = `${smooth.x}px`;
     overlay.style.top = `${smooth.y}px`;
-    overlay.style.transform = `translate(-50%, -50%) perspective(1200px) translateZ(${smooth.z + breathingZ}px) rotateX(${smooth.rotX}deg) rotateY(${smooth.rotY}deg) rotateZ(${smooth.rotZ}deg) scale(${liveScale})`;
+    if (isGroupView) {
+      // Keep group cards flat and readable on mobile instead of aggressive 3D foreshortening.
+      const groupScale = clamp(liveScale * 0.85, 0.68, 1.15);
+      overlay.style.transform = `translate(-50%, -50%) scale(${groupScale})`;
+    } else {
+      overlay.style.transform = `translate(-50%, -50%) perspective(1200px) translateZ(${smooth.z + breathingZ}px) rotateX(${smooth.rotX}deg) rotateY(${smooth.rotY}deg) rotateZ(${smooth.rotZ}deg) scale(${liveScale})`;
+    }
 
     renderRaf = requestAnimationFrame(render);
   };
@@ -622,6 +721,61 @@ function switchToFallback(reason) {
 
   if (stream) {
     stream.getTracks().forEach((track) => track.stop());
+  }
+}
+
+async function switchToCamera() {
+  // Hide fallback panel and attempt to restart camera
+  status("Requesting camera access...");
+  
+  const cameraReady = await startCamera();
+  if (!cameraReady) {
+    status("Failed to access camera. Remaining in fallback mode.");
+    return;
+  }
+
+  // Re-initialize detector if needed
+  if (!("BarcodeDetector" in window)) {
+    useJsQr = typeof window.jsQR === "function";
+    cameraOnlyMode = !useJsQr;
+    detector = null;
+  } else {
+    try {
+      detector = new BarcodeDetector({ formats: ["qr_code"] });
+      useJsQr = false;
+      cameraOnlyMode = false;
+    } catch (_err) {
+      useJsQr = typeof window.jsQR === "function";
+      cameraOnlyMode = !useJsQr;
+      detector = null;
+    }
+  }
+
+  // Reset state and start rendering
+  running = true;
+  status(cameraOnlyMode
+    ? "Camera mode active. QR tracking is limited on this browser."
+    : "Point camera at QR. Move closer/farther for 3D depth.");
+  
+  fallbackPanel.classList.add("hidden");
+  cameraFeed.style.display = "block";
+
+  if (cameraOnlyMode) {
+    targetPose.x = window.innerWidth / 2;
+    targetPose.y = window.innerHeight * 0.58;
+    targetPose.s = clamp((isGroupView ? 1.2 : 0.95) * userScale, 0.4, 2.8);
+    targetPose.z = 18;
+    targetPose.rotX = 8;
+    targetPose.rotY = 0;
+    targetPose.rotZ = 0;
+    overlay.classList.remove("hidden");
+  } else {
+    overlay.classList.add("hidden");
+  }
+
+  startRenderLoop();
+  if (!cameraOnlyMode) {
+    detectTimer = setInterval(scanFrame, useJsQr ? 95 : 75);
   }
 }
 
